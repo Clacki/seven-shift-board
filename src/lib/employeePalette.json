@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Blue",
+    "color": "#2563EB"
+  },
+  {
+    "name": "Green",
+    "color": "#16A34A"
+  },
+  {
+    "name": "Orange",
+    "color": "#EA580C"
+  },
+  {
+    "name": "Violet",
+    "color": "#7C3AED"
+  },
+  {
+    "name": "Rose",
+    "color": "#E11D48"
+  },
+  {
+    "name": "Cyan",
+    "color": "#0891B2"
+  },
+  {
+    "name": "Amber",
+    "color": "#D97706"
+  },
+  {
+    "name": "Teal",
+    "color": "#0F766E"
+  },
+  {
+    "name": "Indigo",
+    "color": "#4F46E5"
+  },
+  {
+    "name": "Pink",
+    "color": "#DB2777"
+  }
+]
