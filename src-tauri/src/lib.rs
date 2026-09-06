@@ -26,9 +26,12 @@ pub fn run() {
             commands::list_shifts,
             commands::save_shift,
             commands::delete_shift,
+            commands::reset_data,
             commands::get_month_schedule,
             commands::get_holiday_api_key,
             commands::set_holiday_api_key,
+            commands::get_my_employee_id,
+            commands::set_my_employee_id,
             holidays::get_holidays,
         ])
         .run(tauri::generate_context!())
