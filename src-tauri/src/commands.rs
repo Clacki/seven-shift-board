@@ -342,12 +342,17 @@ fn cascade_template_times(
     let mut pending = vec![previous.clone()];
     let mut moved = HashSet::new();
     while let Some(current) = pending.pop() {
-        for candidate in templates.iter().filter(|candidate| {
-            candidate.id != previous.id
-                && !moved.contains(&candidate.id)
-                && candidate.start_time == current.end_time
-                && candidate.days_of_week.iter().any(|day| current.days_of_week.contains(day))
-        }) {
+        for candidate in &templates {
+            if candidate.id == previous.id
+                || moved.contains(&candidate.id)
+                || candidate.start_time != current.end_time
+                || !candidate
+                    .days_of_week
+                    .iter()
+                    .any(|day| current.days_of_week.contains(day))
+            {
+                continue;
+            }
             let start = format_shift_time(time_minutes(&candidate.start_time)? + delta, false);
             let end = format_shift_time(time_minutes(&candidate.end_time)? + delta, true);
             transaction.execute("UPDATE shift_templates SET start_time=?1, end_time=?2, updated_at=CURRENT_TIMESTAMP WHERE id=?3", params![start, end, candidate.id]).map_err(db_error)?;
