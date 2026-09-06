@@ -3,6 +3,7 @@ import "./App.css";
 import { WorkSummary } from "./components/WorkSummary";
 import { MonthPicker } from "./components/MonthPicker";
 import { MonthCalendar } from "./components/MonthCalendar";
+import { TimeInput } from "./components/TimeInput";
 import { calendarDates, localDate } from "./lib/calendar";
 import {
   EMPLOYEE_COLOR_PRESETS,
@@ -28,7 +29,7 @@ const errorText = (error: unknown) =>
 
 function App() {
   const [tab, setTab] = useState<
-    "schedule" | "summary" | "templates" | "employees"
+    "schedule" | "summary" | "templates" | "employees" | "settings"
   >("schedule");
   const [month, setMonth] = useState(todayMonth);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -119,6 +120,9 @@ function App() {
         >
           직원 관리
         </button>
+        <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>
+          설정
+        </button>
       </nav>
       {error && (
         <div className="error" role="alert">
@@ -159,6 +163,7 @@ function App() {
           {tab === "employees" && (
             <EmployeeView employees={employees} onReload={reload} />
           )}
+          {tab === "settings" && <SettingsView />}
         </main>
       )}
       <footer className="app-footer">Developed by 김광욱</footer>
@@ -311,24 +316,17 @@ function ScheduleView({
             </label>
             <label>
               시작 시간
-              <input
-                type="time"
+              <TimeInput
                 value={editing.startTime}
-                onChange={(e) =>
-                  setEditing({ ...editing, startTime: e.target.value })
-                }
-                required
+                onChange={(startTime) => setEditing({ ...editing, startTime })}
               />
             </label>
             <label>
               종료 시간
-              <input
-                type="time"
+              <TimeInput
                 value={editing.endTime}
-                onChange={(e) =>
-                  setEditing({ ...editing, endTime: e.target.value })
-                }
-                required
+                allowEndOfDay
+                onChange={(endTime) => setEditing({ ...editing, endTime })}
               />
             </label>
             <label>
@@ -553,22 +551,17 @@ function TemplateView({
             </fieldset>
             <label>
               시작 시간
-              <input
-                type="time"
+              <TimeInput
                 value={form.startTime}
-                onChange={(e) =>
-                  setForm({ ...form, startTime: e.target.value })
-                }
-                required
+                onChange={(startTime) => setForm({ ...form, startTime })}
               />
             </label>
             <label>
               종료 시간
-              <input
-                type="time"
+              <TimeInput
                 value={form.endTime}
-                onChange={(e) => setForm({ ...form, endTime: e.target.value })}
-                required
+                allowEndOfDay
+                onChange={(endTime) => setForm({ ...form, endTime })}
               />
             </label>
             <div className="form-actions full">
@@ -583,6 +576,38 @@ function TemplateView({
       )}
     </section>
   );
+}
+
+function SettingsView() {
+  const [key, setKey] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    void api.getHolidayApiKey().then((saved) => {
+      setKey(saved ?? "");
+      setLoaded(true);
+    }).catch((error) => setMessage(errorText(error)));
+  }, []);
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    try {
+      await api.setHolidayApiKey(key);
+      setMessage(key.trim() ? "공휴일 API 키를 저장했습니다." : "저장된 공휴일 API 키를 제거했습니다.");
+    } catch (error) {
+      setMessage(errorText(error));
+    }
+  }
+  return <section>
+    <div className="section-heading"><div><h2>설정</h2><p>공휴일 표시에 사용할 공공데이터포털 서비스 키를 이 PC의 로컬 SQLite에 저장합니다.</p></div></div>
+    {message && <p className="notice">{message}</p>}
+    {loaded && <form onSubmit={save} className="settings-form">
+      <label>공휴일 API 서비스 키
+        <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="서비스 키를 입력하세요" autoComplete="off" />
+      </label>
+      <p>키를 비워 저장하면 공휴일 API 요청은 건너뛰며, 기존 캐시가 있으면 계속 표시됩니다.</p>
+      <button className="primary">저장</button>
+    </form>}
+  </section>;
 }
 
 function EmployeeView({

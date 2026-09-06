@@ -15,13 +15,13 @@ pub struct Holiday {
 }
 
 pub struct HolidayService {
-    key: Option<String>,
+    fallback_key: Option<String>,
     gate: Mutex<()>,
 }
 impl HolidayService {
     pub fn new(config_dir: &std::path::Path) -> Self {
         Self {
-            key: provider::load_key(config_dir),
+            fallback_key: provider::load_key(config_dir),
             gate: Mutex::new(()),
         }
     }
@@ -137,12 +137,8 @@ pub async fn get_holidays(app: tauri::AppHandle, year: i32) -> Vec<Holiday> {
         let current_year = now
             .with_timezone(&FixedOffset::east_opt(9 * 3600).unwrap())
             .year();
-        get_year(&mut connection, year, current_year, now.timestamp(), || {
-            provider::fetch(
-                year,
-                service.key.as_deref().ok_or("holiday key not configured")?,
-            )
-        })
+        let saved_key: Option<String> = connection.query_row("SELECT value FROM app_settings WHERE key='holiday_api_key'", [], |row| row.get(0)).optional().unwrap_or_default();
+        get_year(&mut connection, year, current_year, now.timestamp(), || provider::fetch(year, saved_key.as_deref().or(service.fallback_key.as_deref()).ok_or("holiday key not configured")?))
     })
     .await
     .unwrap_or_default()

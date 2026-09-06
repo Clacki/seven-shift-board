@@ -54,7 +54,12 @@ pub fn initialize(path: PathBuf) -> Result<DbPath, String> {
                 UNIQUE(template_id, work_date)
             );
             CREATE INDEX IF NOT EXISTS idx_shifts_work_date ON shifts(work_date);
-            CREATE INDEX IF NOT EXISTS idx_templates_employee ON shift_templates(employee_id);",
+            CREATE INDEX IF NOT EXISTS idx_templates_employee ON shift_templates(employee_id);
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );",
         )
         .map_err(|error| error.to_string())?;
 
@@ -124,7 +129,8 @@ pub fn initialize(path: PathBuf) -> Result<DbPath, String> {
             ("야간 B", "형철", "3,4,5,6,0", "22:00", "08:00"),
             ("주말 오전", "광욱", "6,0", "08:00", "15:00"),
             ("주말 오후 A", "은지", "6,0", "14:00", "21:00"),
-            ("주말 오후 B", "선빈", "6,0", "15:00", "22:00"),
+            ("주말 오후 B (토)", "선빈", "6", "15:00", "24:00"),
+            ("주말 오후 B (일)", "선빈", "0", "15:00", "22:00"),
         ];
         for (name, employee_name, days, start, end) in templates {
             transaction.execute(
@@ -132,6 +138,25 @@ pub fn initialize(path: PathBuf) -> Result<DbPath, String> {
                  SELECT ?1, id, ?3, ?4, ?5 FROM employees WHERE name = ?2",
                 params![name, employee_name, days, start, end],
             ).map_err(|error| error.to_string())?;
+        }
+    } else {
+        // Upgrade only the untouched legacy seed. User-created or edited templates do not match.
+        let changed = transaction
+            .execute(
+                "UPDATE shift_templates SET name='주말 오후 B (토)', days_of_week='6', end_time='24:00', updated_at=CURRENT_TIMESTAMP WHERE name='주말 오후 B' AND days_of_week='6,0' AND start_time='15:00' AND end_time='22:00'",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed > 0 {
+            transaction
+                .execute(
+                    "INSERT INTO shift_templates (name, employee_id, days_of_week, start_time, end_time)
+                     SELECT '주말 오후 B (일)', employee_id, '0', '15:00', '22:00'
+                     FROM shift_templates WHERE name='주말 오후 B (토)'
+                     AND NOT EXISTS (SELECT 1 FROM shift_templates WHERE name='주말 오후 B (일)')",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
         }
     }
     transaction.commit().map_err(|error| error.to_string())?;

@@ -18,7 +18,7 @@ pub struct EmployeeInput {
     pub active: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShiftTemplate {
     pub id: i64,
