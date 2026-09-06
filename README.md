@@ -1,4 +1,5 @@
 # Seven Work Manager
+
 매장의 월간 근무 일정, 실제 근무 변경, 직원별 근무 집계를 로컬에서 관리하는 데스크톱 앱입니다. Tauri v2, React, TypeScript, SQLite로 구성되어 있으며 데이터는 사용자의 PC에 저장됩니다.
 
 ## 주요 기능
