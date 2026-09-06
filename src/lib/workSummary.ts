@@ -1,17 +1,24 @@
-import type { Employee, ScheduleItem } from "../types";
+import type { Employee, ScheduleItem, ShiftTemplate } from "../types";
+import { classifyWork, type WorkSegment } from "./workClassification.ts";
 export type EmployeeMonthlySummary = {
   employee: Employee;
   shiftCount: number;
   totalMinutes: number;
+  regularMinutes: number;
+  substituteMinutes: number;
+  additionalMinutes: number;
   shifts: ScheduleItem[];
+  segments: WorkSegment[];
 };
 
 /** Aggregate resolved schedule rows; workDate (the start date) owns overnight hours. */
 export function getEmployeeMonthlySummaries(
   month: string,
   items: ScheduleItem[],
-  employees: Employee[]
+  employees: Employee[],
+  templates: ShiftTemplate[] = []
 ): EmployeeMonthlySummary[] {
+  const templatesById = new Map(templates.map((template) => [template.id, template]));
   const grouped = new Map<number, ScheduleItem[]>();
   for (const item of items) {
     if (!item.workDate.startsWith(month + "-")) continue;
@@ -28,10 +35,15 @@ export function getEmployeeMonthlySummaries(
           a.startTime.localeCompare(b.startTime) ||
           (a.shiftId ?? 0) - (b.shiftId ?? 0)
       );
+      const segments = shifts.flatMap((shift) => classifyWork(shift, templatesById.get(shift.templateId ?? -1)));
       return {
         employee,
         shifts,
         shiftCount: shifts.length,
+        segments,
+        regularMinutes: segments.filter((shift) => shift.category === "regular").reduce((total, shift) => total + shift.durationMinutes, 0),
+        substituteMinutes: segments.filter((shift) => shift.category === "substitute").reduce((total, shift) => total + shift.durationMinutes, 0),
+        additionalMinutes: segments.filter((shift) => shift.category === "additional").reduce((total, shift) => total + shift.durationMinutes, 0),
         totalMinutes: shifts.reduce(
           (total, shift) => total + shift.durationMinutes,
           0
@@ -48,11 +60,26 @@ export function formatWorkMinutes(minutes: number): string {
 }
 
 export function formatSettlementForClipboard(summary: EmployeeMonthlySummary): string {
-  const lines = summary.shifts.flatMap((shift) => {
-    const date = shift.workDate.slice(5).split("-").map(Number).join("/");
-    const name = shift.templateName || "추가 근무";
-    const row = `${date} ${name} ${shift.startTime}-${shift.endTime} ${formatWorkMinutes(shift.durationMinutes)}`;
-    return [row];
+  const groups = [
+    ["regular", "정규 근무", summary.regularMinutes],
+    ["substitute", "대타 근무", summary.substituteMinutes],
+    ["additional", "추가 근무", summary.additionalMinutes],
+  ] as const;
+  const sections = groups.flatMap(([category, label, minutes]) => {
+    if (minutes === 0) return [];
+    const shifts = summary.segments
+      .filter((shift) => shift.category === category)
+      .sort((a, b) => a.workDate.localeCompare(b.workDate) || a.startTime.localeCompare(b.startTime));
+    if (!shifts.length) return [];
+    const lines = shifts.map((shift) => {
+      const date = shift.workDate.slice(5).split("-").map(Number).join("/");
+      return `${date} ${shift.startTime}-${shift.endTime} ${formatWorkMinutes(shift.durationMinutes)}`;
+    });
+    return [[label, "", ...lines].join("\n")];
   });
-  return [...lines, "", `총 근무 ${formatWorkMinutes(summary.totalMinutes)}`].join("\n");
+  const totals = [
+    ...groups.filter(([, , minutes]) => minutes !== 0).map(([, label, minutes]) => `${label} ${formatWorkMinutes(minutes)}`),
+    `총 근무 ${formatWorkMinutes(summary.totalMinutes)}`,
+  ].join("\n");
+  return [...sections, totals].join("\n\n----------------\n\n");
 }

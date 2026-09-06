@@ -11,7 +11,8 @@ import {
   employeeStyle,
 } from "./lib/colors";
 import { getCalendarHolidays } from "./lib/holidays/holidayService";
-import { getShiftDisplayStatuses } from "./lib/shiftDisplay";
+import { copyShiftToDate, getShiftCopyOptions } from "./lib/shiftCopy";
+import { needsOverlapConfirmation, type OverlapWarning } from "./lib/shiftOverlap";
 import type { Holiday } from "./lib/holidays/types";
 import { api } from "./lib/api";
 import type {
@@ -41,7 +42,28 @@ function App() {
   const [error, setError] = useState("");
   const [holidayReload, setHolidayReload] = useState(0);
   const [myEmployeeId, setMyEmployeeId] = useState<number | null>(null);
-  useEffect(() => { void api.getMyEmployeeId().then(setMyEmployeeId).catch(() => undefined); }, []);
+  const [myEmployeeLoaded, setMyEmployeeLoaded] = useState(false);
+  const [savingMyEmployee, setSavingMyEmployee] = useState(false);
+  const selectedEmployeeId = employees.some((employee) => employee.id === myEmployeeId && employee.active)
+    ? myEmployeeId : null;
+  useEffect(() => {
+    void api.getMyEmployeeId().then(setMyEmployeeId)
+      .catch(() => undefined)
+      .finally(() => setMyEmployeeLoaded(true));
+  }, []);
+
+  async function selectMyEmployee(employeeId: number | null) {
+    setSavingMyEmployee(true);
+    try {
+      await api.setMyEmployeeId(employeeId);
+      setMyEmployeeId(employeeId);
+      setError("");
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setSavingMyEmployee(false);
+    }
+  }
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -67,8 +89,6 @@ function App() {
   }, [month, holidayReload]);
 
   async function resetData() {
-    if (!confirm("모든 데이터를 초기 상태로 되돌리시겠습니까?")) return;
-    if (!confirm("이 작업은 되돌릴 수 없습니다. 정말 초기화하시겠습니까?")) return;
     try {
       await api.resetData();
       setHolidays([]);
@@ -111,9 +131,6 @@ function App() {
           <p>정규 스케줄과 실제 근무 기록을 로컬에서 관리합니다.</p>
         </div>
         <div className="header-actions">
-          <button className="reset-button" onClick={() => void resetData()}>
-            데이터 초기화
-          </button>
           <span className="local-badge">로컬 SQLite</span>
         </div>
       </header>
@@ -164,7 +181,9 @@ function App() {
               employees={employees}
               onMove={moveMonth}
               onReload={reload}
-              myEmployeeId={myEmployeeId}
+              myEmployeeId={selectedEmployeeId}
+              onMyEmployeeChange={selectMyEmployee}
+              myEmployeeDisabled={!myEmployeeLoaded || savingMyEmployee}
             />
           )}
           {tab === "summary" && (
@@ -186,7 +205,7 @@ function App() {
           {tab === "employees" && (
             <EmployeeView employees={employees} onReload={reload} />
           )}
-          {tab === "settings" && <SettingsView employees={employees} myEmployeeId={myEmployeeId} onMyEmployeeChange={setMyEmployeeId} />}
+          {tab === "settings" && <SettingsView onReset={resetData} />}
         </main>
       )}
       <footer className="app-footer">Developed by 김광욱</footer>
@@ -203,6 +222,8 @@ function ScheduleView({
   onMove,
   onReload,
   myEmployeeId,
+  onMyEmployeeChange,
+  myEmployeeDisabled,
 }: {
   month: string;
   templates: ShiftTemplate[];
@@ -212,11 +233,15 @@ function ScheduleView({
   onMove: (delta: number) => void;
   onReload: () => Promise<void>;
   myEmployeeId: number | null;
+  onMyEmployeeChange: (value: number | null) => Promise<void>;
+  myEmployeeDisabled: boolean;
 }) {
   const [editing, setEditing] = useState<ShiftInput | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
-  const [onlyMine, setOnlyMine] = useState(false);
+  const [pendingOverlapSave, setPendingOverlapSave] = useState<{ input: ShiftInput; warnings: OverlapWarning[] } | null>(null);
+  const [copyDate, setCopyDate] = useState(`${month}-01`);
+  const copyOptions = getShiftCopyOptions(copyDate, items, templates);
   function edit(item: ScheduleItem) {
     setEditingId(item.shiftId);
     setEditing({
@@ -239,35 +264,35 @@ function ScheduleView({
         workDate: `${month}-01`,
         startTime: "08:00",
         endTime: "15:00",
-        shiftType: "substitute",
+        shiftType: "regular",
         memo: "",
       });
     }
   }
-  async function save(event: React.FormEvent) {
-    event.preventDefault();
-    if (!editing) return;
+  async function persist(editing: ShiftInput) {
+    const template = templates.find((item) => item.id === editing.templateId);
+    const saved = template
+      ? { ...editing, shiftType: editing.employeeId === template.employeeId ? "regular" as const : "substitute" as const }
+      : { ...editing, shiftType: "regular" as const };
     try {
-      await api.saveShift(editing, editingId);
-      const original = items.find((item) => item.shiftId === editingId);
-      if (original && original.endTime !== editing.endTime) {
-        const delta = toMinutes(editing.endTime) - toMinutes(original.endTime);
-        const cascade = actualCascade(original, items, templates);
-        if (cascade.length && confirm(`다음 근무자 시작 시간도 ${Math.abs(delta) / 60}시간 ${delta > 0 ? "늦출" : "앞당길"}까요?`)) {
-          for (const item of cascade) {
-            await api.saveShift(
-              { ...item, startTime: moveTime(item.startTime, delta, false), endTime: moveTime(item.endTime, delta, true) },
-              item.shiftId
-            );
-          }
-        }
-      }
+      await api.saveShift(saved, editingId);
+      setPendingOverlapSave(null);
       setEditing(null);
       setMessage("실제 근무 기록을 저장했습니다.");
       await onReload();
     } catch (error) {
       setMessage(errorText(error));
     }
+  }
+  function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editing) return;
+    const warnings = needsOverlapConfirmation(items, editing, editingId);
+    if (warnings.length) {
+      setPendingOverlapSave({ input: editing, warnings });
+      return;
+    }
+    void persist(editing);
   }
   async function remove() {
     if (
@@ -294,22 +319,56 @@ function ScheduleView({
         <button onClick={add}>+ 추가 근무</button>
       </div>
       <MonthPicker month={month} onMove={onMove} />
-      <label className="check calendar-filter"><input type="checkbox" checked={onlyMine} onChange={(event) => { if (event.target.checked && myEmployeeId === null) { setMessage("설정에서 내 직원을 먼저 선택해주세요."); return; } setOnlyMine(event.target.checked); }} />내 근무만 보기</label>
+      <label className="calendar-filter">
+        내 근무 보기
+        <select
+          value={myEmployeeId ?? ""}
+          disabled={myEmployeeDisabled}
+          onChange={(event) => void onMyEmployeeChange(event.target.value === "" ? null : Number(event.target.value))}
+        >
+          <option value="">전체 근무</option>
+          {employees.filter((employee) => employee.active).map((employee) => (
+            <option key={employee.id} value={employee.id}>{employee.name}</option>
+          ))}
+        </select>
+      </label>
       {message && <p className="notice">{message}</p>}
       <MonthCalendar
         holidays={holidays}
         templates={templates}
         month={month}
-        items={onlyMine && myEmployeeId !== null ? items.filter((item) => item.employeeId === myEmployeeId) : items}
+        items={myEmployeeId !== null ? items.filter((item) => item.employeeId === myEmployeeId) : items}
         employees={employees}
         onEdit={edit}
       />
       {editing && (
         <Modal
           title={editing.templateId ? "실제 근무 수정" : "추가 근무 등록"}
-          onClose={() => setEditing(null)}
+          onClose={() => { setPendingOverlapSave(null); setEditing(null); }}
         >
           <form onSubmit={save} className="form-grid">
+            {editing.templateId === null && editingId === null && (
+              <fieldset className="full shift-copy">
+                <legend>근무 복사</legend>
+                <label>복사할 근무 날짜
+                  <input type="date" value={copyDate} min={`${month}-01`} max={localDate(new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0))} onChange={(event) => setCopyDate(event.target.value)} />
+                </label>
+                {([ ["regular", "정규 근무"], ["additional", "대타 / 추가 근무"] ] as const).map(([group, label]) => (
+                  <div key={group}>
+                    <h4>{label}</h4>
+                    <div className="shift-copy-options">
+                    {copyOptions.filter((option) => option.group === group).map((option) => (
+                      <button type="button" key={option.id} onClick={() => {
+                        const selected = copyOptions.find((candidate) => candidate.id === option.id);
+                        if (selected) setEditing(copyShiftToDate(selected.source, editing.workDate));
+                      }}>{option.source.startTime} ~ {option.source.endTime}</button>
+                    ))}
+                    </div>
+                    {!copyOptions.some((option) => option.group === group) && <p>등록된 근무가 없습니다.</p>}
+                  </div>
+                ))}
+              </fieldset>
+            )}
             <p className="full notice">
               {items.find(
                 (item) =>
@@ -369,21 +428,6 @@ function ScheduleView({
                 onChange={(endTime) => setEditing({ ...editing, endTime })}
               />
             </label>
-            <label>
-              근무 구분
-              <select
-                value={editing.shiftType}
-                onChange={(e) =>
-                  setEditing({
-                    ...editing,
-                    shiftType: e.target.value as ShiftInput["shiftType"],
-                  })
-                }
-              >
-                <option value="regular">정규</option>
-                <option value="substitute">대타</option>
-              </select>
-            </label>
             <label className="full">
               메모
               <textarea
@@ -412,30 +456,32 @@ function ScheduleView({
           </form>
         </Modal>
       )}
+      {pendingOverlapSave && (
+        <Modal title="다른 근무와 시간이 겹칩니다." onClose={() => setPendingOverlapSave(null)}>
+          <div className="overlap-warning-list">
+            {pendingOverlapSave.warnings.map((warning) => (
+              <p key={`${warning.item.shiftId}-${warning.item.templateId}-${warning.item.workDate}-${warning.item.startTime}`}>
+                {formatOverlapDate(warning.overlapStart)} {warning.item.employeeName} {warning.item.startTime}~{warning.item.endTime}
+                <span> · 중복 {formatOverlapTime(warning.overlapStart)}~{formatOverlapTime(warning.overlapEnd)}</span>
+              </p>
+            ))}
+          </div>
+          <p className="confirm-message">그래도 저장하시겠습니까?</p>
+          <div className="confirm-actions">
+            <button type="button" autoFocus onClick={() => setPendingOverlapSave(null)}>취소</button>
+            <button type="button" className="primary" onClick={() => void persist(pendingOverlapSave.input)}>저장</button>
+          </div>
+        </Modal>
+      )}
     </section>
   );
 }
 
-function toMinutes(value: string) {
-  const [hour, minute] = value.split(":").map(Number);
-  return hour * 60 + minute;
+function formatOverlapDate(value: Date) {
+  return `${value.getUTCMonth() + 1}/${value.getUTCDate()}`;
 }
-function moveTime(value: string, delta: number, end: boolean) {
-  const total = toMinutes(value) + delta;
-  const normalized = ((total % 1440) + 1440) % 1440;
-  return end && normalized === 0 && total > 0 ? "24:00" : `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
-}
-function actualCascade(first: ScheduleItem, items: ScheduleItem[], templates: ShiftTemplate[]) {
-  const templatesById = new Map(templates.map((template) => [template.id, template]));
-  const result: ScheduleItem[] = [];
-  let current = first;
-  while (true) {
-    const next = items.find((item) => item.workDate === current.workDate && item.shiftId !== null && item.templateId !== null && item.startTime === current.endTime && getShiftDisplayStatuses(item, templatesById.get(item.templateId)).length === 0);
-    if (!next || result.some((item) => item.shiftId === next.shiftId)) break;
-    result.push(next);
-    current = next;
-  }
-  return result;
+function formatOverlapTime(value: Date) {
+  return `${String(value.getUTCHours()).padStart(2, "0")}:${String(value.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 function TemplateView({
@@ -640,7 +686,21 @@ function TemplateView({
   );
 }
 
-function SettingsView({ employees, myEmployeeId, onMyEmployeeChange }: { employees: Employee[]; myEmployeeId: number | null; onMyEmployeeChange: (id: number | null) => void }) {
+function SettingsView({ onReset }: { onReset: () => Promise<void> }) {
+  const [exporting, setExporting] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  async function exportBackup() {
+    setExporting(true);
+    setMessage("");
+    try {
+      const path = await api.exportDatabaseBackup();
+      setMessage(path ? `백업 파일을 저장했습니다: ${path}` : "백업 내보내기를 취소했습니다.");
+    } catch (error) {
+      setMessage(`백업 파일 저장 실패: ${errorText(error)}`);
+    } finally {
+      setExporting(false);
+    }
+  }
   const [key, setKey] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
@@ -659,27 +719,60 @@ function SettingsView({ employees, myEmployeeId, onMyEmployeeChange }: { employe
       setMessage(errorText(error));
     }
   }
-  async function saveMyEmployee(value: string) {
-    const employeeId = value ? Number(value) : null;
-    try { await api.setMyEmployeeId(employeeId); onMyEmployeeChange(employeeId); setMessage("내 직원 설정을 저장했습니다."); }
-    catch (error) { setMessage(errorText(error)); }
+  async function reset() {
+    await onReset();
+    setConfirmingReset(false);
   }
-  return <section>
-    <div className="section-heading"><div><h2>설정</h2><p>공휴일 표시에 사용할 공공데이터포털 서비스 키를 이 PC의 로컬 SQLite에 저장합니다.</p></div></div>
+  return <section className="settings-page">
+    <div className="section-heading"><div><h2>설정</h2></div></div>
     {message && <p className="notice">{message}</p>}
-    {loaded && <form onSubmit={save} className="settings-form">
-      <label>내 직원
-        <select value={myEmployeeId ?? ""} onChange={(event) => void saveMyEmployee(event.target.value)}>
-          <option value="">선택 안 함</option>
-          {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}{employee.active ? "" : " (비활성)"}</option>)}
-        </select>
-      </label>
-      <label>공휴일 API 서비스 키
-        <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="서비스 키를 입력하세요" autoComplete="off" />
-      </label>
-      <p>키를 비워 저장하면 공휴일 API 요청은 건너뛰며, 기존 캐시가 있으면 계속 표시됩니다.</p>
-      <button className="primary">저장</button>
-    </form>}
+    <div className="settings-card">
+      <h3>데이터 관리</h3>
+      <div className="settings-item">
+        <strong>데이터 백업</strong>
+        <p>직원, 근무 기록, 앱 설정을 포함한 전체 데이터를 백업합니다.</p>
+        <div className="settings-actions settings-actions-start">
+          <button type="button" disabled={exporting} onClick={() => void exportBackup()}>
+            {exporting ? "백업 내보내는 중..." : "백업 파일 내보내기"}
+          </button>
+        </div>
+      </div>
+      <div className="danger-zone">
+        <strong>위험 영역</strong>
+        <p>모든 로컬 데이터를 삭제하고 초기 상태로 되돌립니다.</p>
+        <div className="settings-actions settings-actions-start">
+          <button type="button" className="reset-button" onClick={() => setConfirmingReset(true)}>
+            데이터 초기화
+          </button>
+        </div>
+      </div>
+    </div>
+    {loaded && <div className="settings-card">
+      <h3>공휴일 설정</h3>
+      <form onSubmit={save} className="settings-form">
+        <label>
+          <strong>공공데이터포털 API 서비스 키</strong>
+          <span>공휴일 정보를 불러오기 위해 사용하는 서비스 키입니다.</span>
+          <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="서비스 키를 입력하세요" autoComplete="off" />
+        </label>
+        <p>키를 비워 저장하면 공휴일 API 요청을 건너뜁니다.</p>
+        <div className="settings-actions">
+          <button className="primary">저장</button>
+        </div>
+      </form>
+    </div>}
+    {confirmingReset && (
+      <Modal title="데이터를 초기화하시겠습니까?" onClose={() => setConfirmingReset(false)}>
+        <p className="confirm-message">
+          직원, 근무 기록, 앱 설정 등 현재 저장된 로컬 데이터가 삭제되고 초기 상태로 돌아갑니다.
+        </p>
+        <p className="confirm-warning">이 작업은 되돌릴 수 없습니다.</p>
+        <div className="confirm-actions">
+          <button type="button" autoFocus onClick={() => setConfirmingReset(false)}>취소</button>
+          <button type="button" className="danger" onClick={() => void reset()}>초기화</button>
+        </div>
+      </Modal>
+    )}
   </section>;
 }
 
@@ -852,7 +945,14 @@ function Modal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="modal" role="dialog" aria-modal="true">
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+        }}
+      >
         <div className="modal-title">
           <h3>{title}</h3>
           <button aria-label="닫기" onClick={onClose}>

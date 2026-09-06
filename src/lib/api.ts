@@ -9,6 +9,7 @@ import type {
 } from "../types";
 
 export const api = {
+  exportDatabaseBackup: () => invoke<string | null>("export_database_backup"),
   listEmployees: () => invoke<Employee[]>("list_employees"),
   createEmployee: (input: EmployeeInput) =>
     invoke<Employee>("create_employee", { input }),
