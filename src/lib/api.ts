@@ -24,7 +24,10 @@ export const api = {
   saveShift: (input: ShiftInput, id: number | null = null) =>
     invoke<number>("save_shift", { input, id }),
   deleteShift: (id: number) => invoke<void>("delete_shift", { id }),
+  resetData: () => invoke<void>("reset_data"),
   getHolidayApiKey: () => invoke<string | null>("get_holiday_api_key"),
   setHolidayApiKey: (key: string) =>
     invoke<void>("set_holiday_api_key", { key }),
+  getMyEmployeeId: () => invoke<number | null>("get_my_employee_id"),
+  setMyEmployeeId: (employeeId: number | null) => invoke<void>("set_my_employee_id", { employeeId }),
 };

@@ -4,6 +4,7 @@ import { employeeStyle } from "../lib/colors";
 import { getShiftDisplayStatuses } from "../lib/shiftDisplay";
 import {
   formatWorkMinutes,
+  formatSettlementForClipboard,
   getEmployeeMonthlySummaries,
   type EmployeeMonthlySummary,
 } from "../lib/workSummary";
@@ -33,6 +34,12 @@ export function WorkSummary({
     summaries.find((summary) => summary.employee.active) ??
     summaries[0];
   const hasShifts = summaries.some((summary) => summary.shiftCount > 0);
+  const [message, setMessage] = useState("");
+  async function copy() {
+    if (!selected) return;
+    try { await navigator.clipboard.writeText(formatSettlementForClipboard(selected)); setMessage("정산 내용이 복사되었습니다."); }
+    catch { setMessage("정산 내용을 복사하지 못했습니다."); }
+  }
   return (
     <section>
       <div className="section-heading">
@@ -43,8 +50,10 @@ export function WorkSummary({
             포함합니다.
           </p>
         </div>
+        <button onClick={() => void copy()} disabled={!selected || selected.shiftCount === 0}>정산 내용 복사</button>
       </div>
       <MonthPicker month={month} onMove={onMove} />
+      {message && <p className="notice">{message}</p>}
       {!hasShifts && <p className="notice">이 달에 등록된 근무가 없습니다.</p>}
       <div className="summary-layout">
         <div className="summary-list" role="group" aria-label="직원별 집계">
@@ -154,6 +163,7 @@ function EmployeeShiftDetail({
                     </td>
                     <td>
                       {item.startTime}–{item.endTime}
+                      {item.memo.trim() && <small className="shift-memo">{item.memo}</small>}
                     </td>
                     <td>{formatWorkMinutes(item.durationMinutes)}</td>
                     <td>

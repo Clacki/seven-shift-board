@@ -11,6 +11,7 @@ import {
   employeeStyle,
 } from "./lib/colors";
 import { getCalendarHolidays } from "./lib/holidays/holidayService";
+import { getShiftDisplayStatuses } from "./lib/shiftDisplay";
 import type { Holiday } from "./lib/holidays/types";
 import { api } from "./lib/api";
 import type {
@@ -38,6 +39,9 @@ function App() {
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [holidayReload, setHolidayReload] = useState(0);
+  const [myEmployeeId, setMyEmployeeId] = useState<number | null>(null);
+  useEffect(() => { void api.getMyEmployeeId().then(setMyEmployeeId).catch(() => undefined); }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -60,7 +64,20 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [month]);
+  }, [month, holidayReload]);
+
+  async function resetData() {
+    if (!confirm("모든 데이터를 초기 상태로 되돌리시겠습니까?")) return;
+    if (!confirm("이 작업은 되돌릴 수 없습니다. 정말 초기화하시겠습니까?")) return;
+    try {
+      await api.resetData();
+      setHolidays([]);
+      setHolidayReload((value) => value + 1);
+      await reload();
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+  }
 
   useEffect(() => {
     // Tauri 데이터 로딩은 화면 진입/월 변경 시 수행하는 외부 시스템 동기화다.
@@ -93,7 +110,12 @@ function App() {
           <h1>세븐 근무관리</h1>
           <p>정규 스케줄과 실제 근무 기록을 로컬에서 관리합니다.</p>
         </div>
-        <span className="local-badge">로컬 SQLite</span>
+        <div className="header-actions">
+          <button className="reset-button" onClick={() => void resetData()}>
+            데이터 초기화
+          </button>
+          <span className="local-badge">로컬 SQLite</span>
+        </div>
       </header>
       <nav>
         <button
@@ -142,6 +164,7 @@ function App() {
               employees={employees}
               onMove={moveMonth}
               onReload={reload}
+              myEmployeeId={myEmployeeId}
             />
           )}
           {tab === "summary" && (
@@ -163,7 +186,7 @@ function App() {
           {tab === "employees" && (
             <EmployeeView employees={employees} onReload={reload} />
           )}
-          {tab === "settings" && <SettingsView />}
+          {tab === "settings" && <SettingsView employees={employees} myEmployeeId={myEmployeeId} onMyEmployeeChange={setMyEmployeeId} />}
         </main>
       )}
       <footer className="app-footer">Developed by 김광욱</footer>
@@ -179,6 +202,7 @@ function ScheduleView({
   employees,
   onMove,
   onReload,
+  myEmployeeId,
 }: {
   month: string;
   templates: ShiftTemplate[];
@@ -187,10 +211,12 @@ function ScheduleView({
   employees: Employee[];
   onMove: (delta: number) => void;
   onReload: () => Promise<void>;
+  myEmployeeId: number | null;
 }) {
   const [editing, setEditing] = useState<ShiftInput | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
+  const [onlyMine, setOnlyMine] = useState(false);
   function edit(item: ScheduleItem) {
     setEditingId(item.shiftId);
     setEditing({
@@ -223,6 +249,19 @@ function ScheduleView({
     if (!editing) return;
     try {
       await api.saveShift(editing, editingId);
+      const original = items.find((item) => item.shiftId === editingId);
+      if (original && original.endTime !== editing.endTime) {
+        const delta = toMinutes(editing.endTime) - toMinutes(original.endTime);
+        const cascade = actualCascade(original, items, templates);
+        if (cascade.length && confirm(`다음 근무자 시작 시간도 ${Math.abs(delta) / 60}시간 ${delta > 0 ? "늦출" : "앞당길"}까요?`)) {
+          for (const item of cascade) {
+            await api.saveShift(
+              { ...item, startTime: moveTime(item.startTime, delta, false), endTime: moveTime(item.endTime, delta, true) },
+              item.shiftId
+            );
+          }
+        }
+      }
       setEditing(null);
       setMessage("실제 근무 기록을 저장했습니다.");
       await onReload();
@@ -255,12 +294,13 @@ function ScheduleView({
         <button onClick={add}>+ 추가 근무</button>
       </div>
       <MonthPicker month={month} onMove={onMove} />
+      <label className="check calendar-filter"><input type="checkbox" checked={onlyMine} onChange={(event) => { if (event.target.checked && myEmployeeId === null) { setMessage("설정에서 내 직원을 먼저 선택해주세요."); return; } setOnlyMine(event.target.checked); }} />내 근무만 보기</label>
       {message && <p className="notice">{message}</p>}
       <MonthCalendar
         holidays={holidays}
         templates={templates}
         month={month}
-        items={items}
+        items={onlyMine && myEmployeeId !== null ? items.filter((item) => item.employeeId === myEmployeeId) : items}
         employees={employees}
         onEdit={edit}
       />
@@ -374,6 +414,28 @@ function ScheduleView({
       )}
     </section>
   );
+}
+
+function toMinutes(value: string) {
+  const [hour, minute] = value.split(":").map(Number);
+  return hour * 60 + minute;
+}
+function moveTime(value: string, delta: number, end: boolean) {
+  const total = toMinutes(value) + delta;
+  const normalized = ((total % 1440) + 1440) % 1440;
+  return end && normalized === 0 && total > 0 ? "24:00" : `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
+}
+function actualCascade(first: ScheduleItem, items: ScheduleItem[], templates: ShiftTemplate[]) {
+  const templatesById = new Map(templates.map((template) => [template.id, template]));
+  const result: ScheduleItem[] = [];
+  let current = first;
+  while (true) {
+    const next = items.find((item) => item.workDate === current.workDate && item.shiftId !== null && item.templateId !== null && item.startTime === current.endTime && getShiftDisplayStatuses(item, templatesById.get(item.templateId)).length === 0);
+    if (!next || result.some((item) => item.shiftId === next.shiftId)) break;
+    result.push(next);
+    current = next;
+  }
+  return result;
 }
 
 function TemplateView({
@@ -578,7 +640,7 @@ function TemplateView({
   );
 }
 
-function SettingsView() {
+function SettingsView({ employees, myEmployeeId, onMyEmployeeChange }: { employees: Employee[]; myEmployeeId: number | null; onMyEmployeeChange: (id: number | null) => void }) {
   const [key, setKey] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
@@ -597,10 +659,21 @@ function SettingsView() {
       setMessage(errorText(error));
     }
   }
+  async function saveMyEmployee(value: string) {
+    const employeeId = value ? Number(value) : null;
+    try { await api.setMyEmployeeId(employeeId); onMyEmployeeChange(employeeId); setMessage("내 직원 설정을 저장했습니다."); }
+    catch (error) { setMessage(errorText(error)); }
+  }
   return <section>
     <div className="section-heading"><div><h2>설정</h2><p>공휴일 표시에 사용할 공공데이터포털 서비스 키를 이 PC의 로컬 SQLite에 저장합니다.</p></div></div>
     {message && <p className="notice">{message}</p>}
     {loaded && <form onSubmit={save} className="settings-form">
+      <label>내 직원
+        <select value={myEmployeeId ?? ""} onChange={(event) => void saveMyEmployee(event.target.value)}>
+          <option value="">선택 안 함</option>
+          {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}{employee.active ? "" : " (비활성)"}</option>)}
+        </select>
+      </label>
       <label>공휴일 API 서비스 키
         <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="서비스 키를 입력하세요" autoComplete="off" />
       </label>

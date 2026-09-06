@@ -307,6 +307,14 @@ pub fn delete_shift(db: State<DbPath>, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn reset_data(db: State<DbPath>) -> Result<(), String> {
+    let connection = connect(&db)?;
+    connection.execute_batch("DELETE FROM shifts; DELETE FROM shift_templates; DELETE FROM employees; DELETE FROM app_settings; DELETE FROM holiday_cache; DELETE FROM holiday_cache_years;").map_err(db_error)?;
+    drop(connection);
+    crate::db::initialize(db.0.clone()).map(|_| ())
+}
+
 fn parse_month(month: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d")
         .map_err(|_| "월 형식은 YYYY-MM이어야 합니다.".into())
@@ -380,6 +388,23 @@ pub fn set_holiday_api_key(db: State<DbPath>, key: String) -> Result<(), String>
         connection.execute("INSERT INTO app_settings (key,value,updated_at) VALUES ('holiday_api_key',?1,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP", [key]).map_err(db_error)?;
         connection.execute("DELETE FROM holiday_cache_years WHERE fetched_at IS NULL", []).map_err(db_error)?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_my_employee_id(db: State<DbPath>) -> Result<Option<i64>, String> {
+    let connection = connect(&db)?;
+    connection.query_row("SELECT value FROM app_settings WHERE key='my_employee_id'", [], |row| row.get::<_, String>(0)).optional().map_err(db_error)?.map(|value| value.parse().map_err(|_| "내 직원 설정이 올바르지 않습니다.".into())).transpose()
+}
+
+#[tauri::command]
+pub fn set_my_employee_id(db: State<DbPath>, employee_id: Option<i64>) -> Result<(), String> {
+    let connection = connect(&db)?;
+    if let Some(employee_id) = employee_id {
+        let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM employees WHERE id=?1)", [employee_id], |row| row.get(0)).map_err(db_error)?;
+        if !exists { return Err("직원을 찾을 수 없습니다.".into()); }
+        connection.execute("INSERT INTO app_settings (key,value,updated_at) VALUES ('my_employee_id',?1,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP", [employee_id.to_string()]).map_err(db_error)?;
+    } else { connection.execute("DELETE FROM app_settings WHERE key='my_employee_id'", []).map_err(db_error)?; }
     Ok(())
 }
 

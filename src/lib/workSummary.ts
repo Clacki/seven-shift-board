@@ -46,3 +46,13 @@ export function formatWorkMinutes(minutes: number): string {
   const remainder = minutes % 60;
   return remainder ? hours + "시간 " + remainder + "분" : hours + "시간";
 }
+
+export function formatSettlementForClipboard(summary: EmployeeMonthlySummary): string {
+  const lines = summary.shifts.flatMap((shift) => {
+    const date = shift.workDate.slice(5).split("-").map(Number).join("/");
+    const name = shift.templateName || "추가 근무";
+    const row = `${date} ${name} ${shift.startTime}-${shift.endTime} ${formatWorkMinutes(shift.durationMinutes)}`;
+    return [row];
+  });
+  return [...lines, "", `총 근무 ${formatWorkMinutes(summary.totalMinutes)}`].join("\n");
+}
