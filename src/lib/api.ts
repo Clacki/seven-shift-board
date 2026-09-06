@@ -24,4 +24,7 @@ export const api = {
   saveShift: (input: ShiftInput, id: number | null = null) =>
     invoke<number>("save_shift", { input, id }),
   deleteShift: (id: number) => invoke<void>("delete_shift", { id }),
+  getHolidayApiKey: () => invoke<string | null>("get_holiday_api_key"),
+  setHolidayApiKey: (key: string) =>
+    invoke<void>("set_holiday_api_key", { key }),
 };

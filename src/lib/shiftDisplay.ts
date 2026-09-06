@@ -4,7 +4,7 @@ export const SHIFT_STATUS_LABELS = {
   added: "추가",
   substitute: "대타",
   "early-start": "조기출근",
-  late: "지각",
+  late: "출근 시간 조정",
   "early-leave": "조기퇴근",
   extended: "연장",
 } as const;

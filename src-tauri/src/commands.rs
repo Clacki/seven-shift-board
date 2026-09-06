@@ -2,7 +2,7 @@ use crate::{
     db::{connect, DbPath},
     models::*,
 };
-use chrono::{Datelike, Duration, NaiveDate, NaiveTime};
+use chrono::{Datelike, Duration, NaiveDate, NaiveTime, Timelike};
 use rusqlite::{params, OptionalExtension, Row};
 use std::collections::HashSet;
 use tauri::State;
@@ -27,10 +27,17 @@ fn clean_name(value: String) -> Result<String, String> {
     }
 }
 
-fn validate_time(value: &str) -> Result<(), String> {
+fn time_minutes(value: &str) -> Result<i64, String> {
+    if value == "24:00" {
+        return Ok(24 * 60);
+    }
     NaiveTime::parse_from_str(value, "%H:%M")
-        .map(|_| ())
+        .map(|time| i64::from(time.num_seconds_from_midnight() / 60))
         .map_err(|_| format!("시간 형식이 올바르지 않습니다: {value}"))
+}
+
+fn validate_time(value: &str) -> Result<(), String> {
+    time_minutes(value).map(|_| ())
 }
 
 fn encode_days(days: &[u32]) -> Result<String, String> {
@@ -178,6 +185,9 @@ pub fn list_shift_templates(db: State<DbPath>) -> Result<Vec<ShiftTemplate>, Str
 }
 
 fn validate_template(input: ShiftTemplateInput) -> Result<(String, String), String> {
+    if input.start_time == "24:00" {
+        return Err("시작 시간은 00:00부터 23:59까지 입력해주세요.".into());
+    }
     validate_time(&input.start_time)?;
     validate_time(&input.end_time)?;
     Ok((clean_name(input.name)?, encode_days(&input.days_of_week)?))
@@ -212,11 +222,20 @@ pub fn update_shift_template(
         end_time: input.end_time.clone(),
         active: input.active,
     })?;
-    let connection = connect(&db)?;
-    let changed = connection.execute("UPDATE shift_templates SET name=?1, employee_id=?2, days_of_week=?3, start_time=?4, end_time=?5, active=?6, updated_at=CURRENT_TIMESTAMP WHERE id=?7", params![name, input.employee_id, days, input.start_time, input.end_time, input.active, id]).map_err(db_error)?;
+    let mut connection = connect(&db)?;
+    let previous: ShiftTemplate = connection.query_row("SELECT t.id, t.name, t.employee_id, e.name, t.days_of_week, t.start_time, t.end_time, t.active, t.created_at, t.updated_at FROM shift_templates t JOIN employees e ON e.id=t.employee_id WHERE t.id=?1", [id], map_template).map_err(|error| match error { rusqlite::Error::QueryReturnedNoRows => "기본 근무를 찾을 수 없습니다.".into(), other => db_error(other) })?;
+    let transaction = connection.transaction().map_err(db_error)?;
+    let changed = transaction.execute("UPDATE shift_templates SET name=?1, employee_id=?2, days_of_week=?3, start_time=?4, end_time=?5, active=?6, updated_at=CURRENT_TIMESTAMP WHERE id=?7", params![name, input.employee_id, days, input.start_time, input.end_time, input.active, id]).map_err(db_error)?;
     if changed == 0 {
         Err("기본 근무를 찾을 수 없습니다.".into())
     } else {
+        // Only templates that were originally touching and share at least one weekday form a chain.
+        // Saved `shifts` are deliberately never updated: they are user-owned actual records.
+        let delta = time_minutes(&input.end_time)? - time_minutes(&previous.end_time)?;
+        if delta != 0 {
+            cascade_template_times(&transaction, &previous, delta)?;
+        }
+        transaction.commit().map_err(db_error)?;
         Ok(())
     }
 }
@@ -238,6 +257,9 @@ pub fn list_shifts(db: State<DbPath>, month: String) -> Result<Vec<Shift>, Strin
 fn validate_shift(input: &ShiftInput) -> Result<(), String> {
     NaiveDate::parse_from_str(&input.work_date, "%Y-%m-%d")
         .map_err(|_| "근무 날짜가 올바르지 않습니다.".to_string())?;
+    if input.start_time == "24:00" {
+        return Err("시작 시간은 00:00부터 23:59까지 입력해주세요.".into());
+    }
     validate_time(&input.start_time)?;
     validate_time(&input.end_time)?;
     if !matches!(input.shift_type.as_str(), "regular" | "substitute") {
@@ -291,15 +313,69 @@ fn parse_month(month: &str) -> Result<NaiveDate, String> {
 }
 
 pub fn duration_minutes(start: &str, end: &str) -> Result<i64, String> {
-    let start = NaiveTime::parse_from_str(start, "%H:%M")
-        .map_err(|_| "시작 시간이 올바르지 않습니다.".to_string())?;
-    let end = NaiveTime::parse_from_str(end, "%H:%M")
-        .map_err(|_| "종료 시간이 올바르지 않습니다.".to_string())?;
-    let mut minutes = (end - start).num_minutes();
+    let start = time_minutes(start).map_err(|_| "시작 시간이 올바르지 않습니다.".to_string())?;
+    let end = time_minutes(end).map_err(|_| "종료 시간이 올바르지 않습니다.".to_string())?;
+    let mut minutes = end - start;
     if end <= start {
         minutes += 24 * 60;
     }
     Ok(minutes)
+}
+
+fn format_shift_time(minutes: i64, end_time: bool) -> String {
+    let normalized = minutes.rem_euclid(24 * 60);
+    if end_time && normalized == 0 && minutes > 0 {
+        "24:00".into()
+    } else {
+        format!("{:02}:{:02}", normalized / 60, normalized % 60)
+    }
+}
+
+fn cascade_template_times(
+    transaction: &rusqlite::Transaction<'_>,
+    previous: &ShiftTemplate,
+    delta: i64,
+) -> Result<(), String> {
+    let mut statement = transaction.prepare("SELECT t.id, t.name, t.employee_id, e.name, t.days_of_week, t.start_time, t.end_time, t.active, t.created_at, t.updated_at FROM shift_templates t JOIN employees e ON e.id=t.employee_id").map_err(db_error)?;
+    let templates: Vec<ShiftTemplate> = statement.query_map([], map_template).map_err(db_error)?.collect::<Result<_, _>>().map_err(db_error)?;
+    drop(statement);
+    let mut pending = vec![previous.clone()];
+    let mut moved = HashSet::new();
+    while let Some(current) = pending.pop() {
+        for candidate in templates.iter().filter(|candidate| {
+            candidate.id != previous.id
+                && !moved.contains(&candidate.id)
+                && candidate.start_time == current.end_time
+                && candidate.days_of_week.iter().any(|day| current.days_of_week.contains(day))
+        }) {
+            let start = format_shift_time(time_minutes(&candidate.start_time)? + delta, false);
+            let end = format_shift_time(time_minutes(&candidate.end_time)? + delta, true);
+            transaction.execute("UPDATE shift_templates SET start_time=?1, end_time=?2, updated_at=CURRENT_TIMESTAMP WHERE id=?3", params![start, end, candidate.id]).map_err(db_error)?;
+            moved.insert(candidate.id);
+            // Continue matching from the original timeline, not shifted values.
+            pending.push(candidate.clone());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_holiday_api_key(db: State<DbPath>) -> Result<Option<String>, String> {
+    let connection = connect(&db)?;
+    connection.query_row("SELECT value FROM app_settings WHERE key='holiday_api_key'", [], |row| row.get(0)).optional().map_err(db_error)
+}
+
+#[tauri::command]
+pub fn set_holiday_api_key(db: State<DbPath>, key: String) -> Result<(), String> {
+    let connection = connect(&db)?;
+    let key = key.trim();
+    if key.is_empty() {
+        connection.execute("DELETE FROM app_settings WHERE key='holiday_api_key'", []).map_err(db_error)?;
+    } else {
+        connection.execute("INSERT INTO app_settings (key,value,updated_at) VALUES ('holiday_api_key',?1,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP", [key]).map_err(db_error)?;
+        connection.execute("DELETE FROM holiday_cache_years WHERE fetched_at IS NULL", []).map_err(db_error)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -400,5 +476,9 @@ mod tests {
     #[test]
     fn calculates_overnight_shift() {
         assert_eq!(duration_minutes("22:00", "08:00").unwrap(), 600);
+    }
+    #[test]
+    fn treats_end_of_day_as_nine_hours() {
+        assert_eq!(duration_minutes("15:00", "24:00").unwrap(), 540);
     }
 }
