@@ -25,8 +25,8 @@ export function WorkSummary({
   onMove: (delta: number) => void;
 }) {
   const summaries = useMemo(
-    () => getEmployeeMonthlySummaries(month, items, employees),
-    [month, items, employees]
+    () => getEmployeeMonthlySummaries(month, items, employees, templates),
+    [month, items, employees, templates]
   );
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected =
@@ -118,7 +118,19 @@ function EmployeeShiftDetail({
             <dd>{summary.shiftCount}회</dd>
           </div>
           <div>
-            <dt>총 근무시간</dt>
+            <dt>정규 근무</dt>
+            <dd>{formatWorkMinutes(summary.regularMinutes)}</dd>
+          </div>
+          <div>
+            <dt>대타 근무</dt>
+            <dd>{formatWorkMinutes(summary.substituteMinutes)}</dd>
+          </div>
+          <div>
+            <dt>추가 근무</dt>
+            <dd>{formatWorkMinutes(summary.additionalMinutes)}</dd>
+          </div>
+          <div>
+            <dt>총 근무</dt>
             <dd>{formatWorkMinutes(summary.totalMinutes)}</dd>
           </div>
         </dl>

@@ -1,4 +1,5 @@
 mod commands;
+mod backup;
 mod db;
 mod holidays;
 mod models;
@@ -9,6 +10,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("seven-work-manager.db");
             let db = db::initialize(path).map_err(std::io::Error::other)?;
@@ -32,6 +34,7 @@ pub fn run() {
             commands::set_holiday_api_key,
             commands::get_my_employee_id,
             commands::set_my_employee_id,
+            backup::export_database_backup,
             holidays::get_holidays,
         ])
         .run(tauri::generate_context!())

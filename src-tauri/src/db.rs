@@ -221,7 +221,7 @@ mod tests {
         let templates: i64 = connection
             .query_row("SELECT COUNT(*) FROM shift_templates", [], |row| row.get(0))
             .unwrap();
-        assert_eq!((employees, templates), (6, 7));
+        assert_eq!((employees, templates), (6, 8));
         let colors: Vec<String> = connection
             .prepare("SELECT color FROM employees ORDER BY id")
             .unwrap()
