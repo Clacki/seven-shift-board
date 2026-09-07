@@ -60,6 +60,7 @@ export function formatWorkMinutes(minutes: number): string {
 }
 
 export function formatSettlementForClipboard(summary: EmployeeMonthlySummary): string {
+  const weekdays = ["일", "월", "화", "수", "목", "금", "토"];
   const groups = [
     ["regular", "정규 근무", summary.regularMinutes],
     ["substitute", "대타 근무", summary.substituteMinutes],
@@ -73,7 +74,8 @@ export function formatSettlementForClipboard(summary: EmployeeMonthlySummary): s
     if (!shifts.length) return [];
     const lines = shifts.map((shift) => {
       const date = shift.workDate.slice(5).split("-").map(Number).join("/");
-      return `${date} ${shift.startTime}-${shift.endTime} ${formatWorkMinutes(shift.durationMinutes)}`;
+      const weekday = weekdays[new Date(`${shift.workDate}T00:00:00`).getDay()];
+      return `${date} (${weekday}) ${shift.startTime}-${shift.endTime} ${formatWorkMinutes(shift.durationMinutes)}`;
     });
     return [[label, "", ...lines].join("\n")];
   });

@@ -35,6 +35,7 @@ pub fn run() {
             commands::get_my_employee_id,
             commands::set_my_employee_id,
             backup::export_database_backup,
+            backup::restore_database_backup,
             holidays::get_holidays,
         ])
         .run(tauri::generate_context!())
