@@ -205,7 +205,7 @@ function App() {
           {tab === "employees" && (
             <EmployeeView employees={employees} onReload={reload} />
           )}
-          {tab === "settings" && <SettingsView onReset={resetData} />}
+          {tab === "settings" && <SettingsView onReset={resetData} onReload={reload} />}
         </main>
       )}
       <footer className="app-footer">Developed by 김광욱</footer>
@@ -686,9 +686,11 @@ function TemplateView({
   );
 }
 
-function SettingsView({ onReset }: { onReset: () => Promise<void> }) {
+function SettingsView({ onReset, onReload }: { onReset: () => Promise<void>; onReload: () => Promise<void> }) {
   const [exporting, setExporting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [confirmingRestore, setConfirmingRestore] = useState(false);
   async function exportBackup() {
     setExporting(true);
     setMessage("");
@@ -699,6 +701,24 @@ function SettingsView({ onReset }: { onReset: () => Promise<void> }) {
       setMessage(`백업 파일 저장 실패: ${errorText(error)}`);
     } finally {
       setExporting(false);
+    }
+  }
+  async function restoreBackup() {
+    setRestoring(true);
+    setMessage("");
+    try {
+      const safetyPath = await api.restoreDatabaseBackup();
+      if (safetyPath) {
+        await onReload();
+        setMessage(`백업을 복원했습니다. 복원 전 데이터는 다음 파일에 저장되었습니다: ${safetyPath}`);
+      } else {
+        setMessage("백업 복원을 취소했습니다.");
+      }
+    } catch (error) {
+      setMessage(`백업 복원 실패: ${errorText(error)}`);
+    } finally {
+      setRestoring(false);
+      setConfirmingRestore(false);
     }
   }
   const [key, setKey] = useState("");
@@ -735,6 +755,9 @@ function SettingsView({ onReset }: { onReset: () => Promise<void> }) {
           <button type="button" disabled={exporting} onClick={() => void exportBackup()}>
             {exporting ? "백업 내보내는 중..." : "백업 파일 내보내기"}
           </button>
+          <button type="button" disabled={restoring} onClick={() => setConfirmingRestore(true)}>
+            {restoring ? "백업 복원 중..." : "백업 파일 복원"}
+          </button>
         </div>
       </div>
       <div className="danger-zone">
@@ -770,6 +793,18 @@ function SettingsView({ onReset }: { onReset: () => Promise<void> }) {
         <div className="confirm-actions">
           <button type="button" autoFocus onClick={() => setConfirmingReset(false)}>취소</button>
           <button type="button" className="danger" onClick={() => void reset()}>초기화</button>
+        </div>
+      </Modal>
+    )}
+    {confirmingRestore && (
+      <Modal title="백업 파일을 복원할까요?" onClose={() => setConfirmingRestore(false)}>
+        <p className="confirm-message">
+          백업 파일을 선택하면 현재 데이터가 해당 시점의 데이터로 바뀝니다. 복원 전 현재 데이터는 자동으로 별도 백업 파일에 저장됩니다.
+        </p>
+        <p className="confirm-warning">복원 후에는 화면을 새로 불러옵니다.</p>
+        <div className="confirm-actions">
+          <button type="button" autoFocus onClick={() => setConfirmingRestore(false)}>취소</button>
+          <button type="button" className="danger" onClick={() => void restoreBackup()}>백업 파일 선택</button>
         </div>
       </Modal>
     )}

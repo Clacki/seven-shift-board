@@ -56,6 +56,56 @@ fn export_to_path(source_path: &Path, destination: &Path) -> Result<(), String> 
     Ok(())
 }
 
+fn verify_database(path: &Path) -> Result<(), String> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if integrity == "ok" {
+        Ok(())
+    } else {
+        Err("선택한 백업 파일의 무결성 확인에 실패했습니다.".into())
+    }
+}
+
+/// Restore a verified backup after first creating a separate snapshot of the current data.
+fn restore_from_path(backup_path: &Path, destination: &Path) -> Result<String, String> {
+    if backup_path == destination {
+        return Err("현재 사용 중인 데이터베이스 파일은 복원 파일로 선택할 수 없습니다.".into());
+    }
+    verify_database(backup_path)?;
+    let parent = destination
+        .parent()
+        .ok_or("현재 데이터베이스 경로가 올바르지 않습니다.")?;
+    let safety_path = parent.join(format!(
+        "seven-work-manager-pre-restore-{}.db",
+        chrono::Local::now().format("%Y-%m-%d-%H%M%S")
+    ));
+    export_to_path(destination, &safety_path)?;
+
+    let source = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    let mut target = Connection::open(destination).map_err(|error| error.to_string())?;
+    {
+        let backup = Backup::new(&source, &mut target).map_err(|error| error.to_string())?;
+        backup
+            .run_to_completion(128, Duration::from_millis(10), None)
+            .map_err(|error| error.to_string())?;
+    }
+    target
+        .pragma_update(None, "journal_mode", "DELETE")
+        .map_err(|error| error.to_string())?;
+    let integrity: String = target
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if integrity != "ok" {
+        return Err("복원된 데이터베이스의 무결성 확인에 실패했습니다. 자동 백업 파일을 사용해 복구해주세요.".into());
+    }
+    target.close().map_err(|(_, error)| error.to_string())?;
+    Ok(safety_path.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub async fn export_database_backup(
     app: tauri::AppHandle,
@@ -80,6 +130,29 @@ pub async fn export_database_backup(
         let destination = selected.into_path().map_err(|error| error.to_string())?;
         export_to_path(&source, &destination)?;
         Ok(Some(destination.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn restore_database_backup(
+    app: tauri::AppHandle,
+    db: State<'_, DbPath>,
+) -> Result<Option<String>, String> {
+    let destination = db.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(selected) = app
+            .dialog()
+            .file()
+            .set_title("복원할 백업 파일 선택")
+            .add_filter("SQLite 데이터베이스", &["db"])
+            .blocking_pick_file()
+        else {
+            return Ok(None);
+        };
+        let backup_path = selected.into_path().map_err(|error| error.to_string())?;
+        restore_from_path(&backup_path, &destination).map(Some)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -190,5 +263,34 @@ mod tests {
             export_to_path(&source, &directory.path().join("missing-folder/output.db")).is_err()
         );
         assert_eq!(std::fs::read(&source).unwrap(), before);
+    }
+
+    #[test]
+    fn restore_replaces_data_and_keeps_a_pre_restore_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination_path = directory.path().join("current.db");
+        let backup_path = directory.path().join("backup.db");
+        let current = Connection::open(&destination_path).unwrap();
+        current
+            .execute_batch(
+                "CREATE TABLE entries(value TEXT); INSERT INTO entries VALUES ('current');",
+            )
+            .unwrap();
+        let expected_safety = snapshot(&current);
+        drop(current);
+        let backup = Connection::open(&backup_path).unwrap();
+        backup
+            .execute_batch(
+                "CREATE TABLE entries(value TEXT); INSERT INTO entries VALUES ('backup');",
+            )
+            .unwrap();
+        let expected_restored = snapshot(&backup);
+        drop(backup);
+
+        let safety_path = restore_from_path(&backup_path, &destination_path).unwrap();
+        let restored = Connection::open(&destination_path).unwrap();
+        let safety = Connection::open(safety_path).unwrap();
+        assert_eq!(snapshot(&restored), expected_restored);
+        assert_eq!(snapshot(&safety), expected_safety);
     }
 }
