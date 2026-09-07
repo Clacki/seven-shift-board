@@ -35,7 +35,7 @@ test("settlement splits a changed template shift into slot work and additional e
   assert.deepEqual([substitute.regularMinutes, substitute.substituteMinutes, substitute.additionalMinutes, substitute.totalMinutes], [0, 420, 120, 540]);
   assert.match(formatSettlementForClipboard(regular), /정규 근무 7시간\n추가 근무 2시간\n총 근무 9시간/);
 });
-test("settlement groups regular/substitute/additional without row labels, names, weekdays, or memo", () => {
+test("settlement groups regular/substitute/additional with weekdays but without row labels, names, or memo", () => {
   const summary = summarize([
     row({ workDate: "2026-09-12", startTime: "14:00", endTime: "21:00", shiftType: "substitute", templateName: "주말 오후 B (토)" }),
     row({ workDate: "2026-09-08", templateId: null, templateName: "야간 B", memo: "대타 (일)" }),
@@ -45,20 +45,20 @@ test("settlement groups regular/substitute/additional without row labels, names,
   assert.equal(formatSettlementForClipboard(summary), [
     "정규 근무",
     "",
-    "9/12 08:00-15:00 7시간",
+    "9/12 (토) 08:00-15:00 7시간",
     "",
     "----------------",
     "",
     "대타 근무",
     "",
-    "9/12 14:00-21:00 7시간",
+    "9/12 (토) 14:00-21:00 7시간",
     "",
     "----------------",
     "",
     "추가 근무",
     "",
-    "9/1 22:00-08:00 10시간",
-    "9/8 08:00-15:00 7시간",
+    "9/1 (화) 22:00-08:00 10시간",
+    "9/8 (화) 08:00-15:00 7시간",
     "",
     "----------------",
     "",
@@ -75,7 +75,7 @@ test("settlement omits each zero category, always prints total, and preserves mi
     [{ templateId: null }, "추가"],
   ]) {
     const summary = summarize([row({ ...changes, endTime: "15:15", durationMinutes: 435 })])[0];
-    assert.equal(formatSettlementForClipboard(summary), `${label} 근무\n\n9/9 08:00-15:15 7시간 15분\n\n----------------\n\n${label} 근무 7시간 15분\n총 근무 7시간 15분`);
+    assert.equal(formatSettlementForClipboard(summary), `${label} 근무\n\n9/9 (수) 08:00-15:15 7시간 15분\n\n----------------\n\n${label} 근무 7시간 15분\n총 근무 7시간 15분`);
   }
   assert.equal(formatSettlementForClipboard(summarize([])[0]), "총 근무 0시간");
 });
@@ -83,7 +83,7 @@ test("clipboard sorts each section by date then start time without mutating reco
   const summary = summarize([row({ workDate: "2026-09-10" }), row({ startTime: "15:00", endTime: "22:00" }), row()])[0];
   const before = { ...summary, shifts: summary.shifts.map((shift) => ({ ...shift })) };
   const lines = formatSettlementForClipboard(summary).split("\n").filter((line) => line.startsWith("9/"));
-  assert.deepEqual(lines, ["9/9 08:00-15:00 7시간", "9/9 15:00-22:00 7시간", "9/10 08:00-15:00 7시간"]);
+  assert.deepEqual(lines, ["9/9 (수) 08:00-15:00 7시간", "9/9 (수) 15:00-22:00 7시간", "9/10 (목) 08:00-15:00 7시간"]);
   assert.deepEqual(summary, before);
 });
 test("categories use stored type and template ID, never names or memo", () => {
