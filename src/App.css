@@ -289,6 +289,15 @@ label.check input {
   gap: 8px;
   margin-top: 5px;
 }
+.schedule-form-actions {
+  display: flex;
+  justify-content: space-between;
+}
+.schedule-form-actions-left,
+.schedule-form-actions-right {
+  display: flex;
+  gap: 8px;
+}
 .primary {
   color: white;
   background: #315fb6;

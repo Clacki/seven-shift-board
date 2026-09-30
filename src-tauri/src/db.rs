@@ -53,6 +53,11 @@ pub fn initialize(path: PathBuf) -> Result<DbPath, String> {
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(template_id, work_date)
             );
+            CREATE TABLE IF NOT EXISTS deleted_template_shifts (
+                template_id INTEGER NOT NULL REFERENCES shift_templates(id) ON DELETE CASCADE,
+                work_date TEXT NOT NULL,
+                PRIMARY KEY(template_id, work_date)
+            );
             CREATE INDEX IF NOT EXISTS idx_shifts_work_date ON shifts(work_date);
             CREATE INDEX IF NOT EXISTS idx_templates_employee ON shift_templates(employee_id);
             CREATE TABLE IF NOT EXISTS app_settings (

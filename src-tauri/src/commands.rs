@@ -277,6 +277,14 @@ pub fn save_shift(db: State<DbPath>, input: ShiftInput, id: Option<i64>) -> Resu
         return if changed == 0 {
             Err("근무 기록을 찾을 수 없습니다.".into())
         } else {
+            if let Some(template_id) = input.template_id {
+                connection
+                    .execute(
+                        "DELETE FROM deleted_template_shifts WHERE template_id=?1 AND work_date=?2",
+                        params![template_id, input.work_date],
+                    )
+                    .map_err(db_error)?;
+            }
             Ok(id)
         };
     }
@@ -286,6 +294,12 @@ pub fn save_shift(db: State<DbPath>, input: ShiftInput, id: Option<i64>) -> Resu
         params![input.template_id, input.employee_id, input.work_date, input.start_time, input.end_time, input.shift_type, input.memo.trim()],
     ).map_err(db_error)?;
     if input.template_id.is_some() {
+        connection
+            .execute(
+                "DELETE FROM deleted_template_shifts WHERE template_id=?1 AND work_date=?2",
+                params![input.template_id, input.work_date],
+            )
+            .map_err(db_error)?;
         connection
             .query_row(
                 "SELECT id FROM shifts WHERE template_id=?1 AND work_date=?2",
@@ -299,18 +313,98 @@ pub fn save_shift(db: State<DbPath>, input: ShiftInput, id: Option<i64>) -> Resu
 }
 
 #[tauri::command]
-pub fn delete_shift(db: State<DbPath>, id: i64) -> Result<(), String> {
-    let connection = connect(&db)?;
-    connection
+pub fn restore_shift(db: State<DbPath>, id: i64) -> Result<(), String> {
+    let mut connection = connect(&db)?;
+    let transaction = connection.transaction().map_err(db_error)?;
+    let shift: Option<(Option<i64>, String)> = transaction
+        .query_row(
+            "SELECT template_id, work_date FROM shifts WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some((Some(template_id), work_date)) = shift else {
+        return Err("근무 기록을 찾을 수 없습니다.".into());
+    };
+    transaction
         .execute("DELETE FROM shifts WHERE id=?1", [id])
         .map_err(db_error)?;
+    transaction
+        .execute(
+            "DELETE FROM deleted_template_shifts WHERE template_id=?1 AND work_date=?2",
+            params![template_id, work_date],
+        )
+        .map_err(db_error)?;
+    transaction.commit().map_err(db_error)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_shift(db: State<DbPath>, id: i64) -> Result<(), String> {
+    let mut connection = connect(&db)?;
+    let transaction = connection.transaction().map_err(db_error)?;
+    let shift: Option<(Option<i64>, String)> = transaction
+        .query_row(
+            "SELECT template_id, work_date FROM shifts WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some((template_id, work_date)) = shift else {
+        return Err("근무 기록을 찾을 수 없습니다.".into());
+    };
+    transaction
+        .execute("DELETE FROM shifts WHERE id=?1", [id])
+        .map_err(db_error)?;
+    if let Some(template_id) = template_id {
+        transaction.execute("INSERT OR IGNORE INTO deleted_template_shifts (template_id, work_date) VALUES (?1, ?2)", params![template_id, work_date]).map_err(db_error)?;
+    }
+    transaction.commit().map_err(db_error)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_template_shift(
+    db: State<DbPath>,
+    template_id: i64,
+    work_date: String,
+) -> Result<(), String> {
+    NaiveDate::parse_from_str(&work_date, "%Y-%m-%d")
+        .map_err(|_| "근무 날짜가 올바르지 않습니다.".to_string())?;
+    let mut connection = connect(&db)?;
+    let transaction = connection.transaction().map_err(db_error)?;
+    let template_exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM shift_templates WHERE id=?1)",
+            [template_id],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    if !template_exists {
+        return Err("기본 근무를 찾을 수 없습니다.".into());
+    }
+    transaction
+        .execute(
+            "DELETE FROM shifts WHERE template_id=?1 AND work_date=?2",
+            params![template_id, work_date],
+        )
+        .map_err(db_error)?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO deleted_template_shifts (template_id, work_date) VALUES (?1, ?2)",
+            params![template_id, work_date],
+        )
+        .map_err(db_error)?;
+    transaction.commit().map_err(db_error)?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn reset_data(db: State<DbPath>) -> Result<(), String> {
     let connection = connect(&db)?;
-    connection.execute_batch("DELETE FROM shifts; DELETE FROM shift_templates; DELETE FROM employees; DELETE FROM app_settings; DELETE FROM holiday_cache; DELETE FROM holiday_cache_years;").map_err(db_error)?;
+    connection.execute_batch("DELETE FROM shifts; DELETE FROM deleted_template_shifts; DELETE FROM shift_templates; DELETE FROM employees; DELETE FROM app_settings; DELETE FROM holiday_cache; DELETE FROM holiday_cache_years;").map_err(db_error)?;
     drop(connection);
     crate::db::initialize(db.0.clone()).map(|_| ())
 }
@@ -433,6 +527,16 @@ pub fn get_month_schedule(db: State<DbPath>, month: String) -> Result<Vec<Schedu
             .iter()
             .filter(|template| template.days_of_week.contains(&weekday))
         {
+            let deleted: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM deleted_template_shifts WHERE template_id=?1 AND work_date=?2)",
+                    params![template.id, date.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+            if deleted {
+                continue;
+            }
             let saved: Option<Shift> = connection.query_row("SELECT s.id,s.template_id,s.employee_id,e.name,s.work_date,s.start_time,s.end_time,s.shift_type,s.memo,s.created_at,s.updated_at FROM shifts s JOIN employees e ON e.id=s.employee_id WHERE s.template_id=?1 AND s.work_date=?2", params![template.id, date.to_string()], map_shift).optional().map_err(db_error)?;
             if let Some(shift) = saved {
                 included_shift_ids.insert(shift.id);
