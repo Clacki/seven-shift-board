@@ -240,6 +240,7 @@ function ScheduleView({
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [pendingOverlapSave, setPendingOverlapSave] = useState<{ input: ShiftInput; warnings: OverlapWarning[] } | null>(null);
+  const [pendingShiftAction, setPendingShiftAction] = useState<"restore" | "delete" | null>(null);
   const [copyDate, setCopyDate] = useState(`${month}-01`);
   const copyOptions = getShiftCopyOptions(copyDate, items, templates);
   function edit(item: ScheduleItem) {
@@ -294,16 +295,31 @@ function ScheduleView({
     }
     void persist(editing);
   }
-  async function remove() {
-    if (
-      !editingId ||
-      !confirm("저장된 실제 근무 기록을 삭제하고 기본 일정으로 되돌릴까요?")
-    )
-      return;
+  async function restore() {
+    if (editingId === null) return;
     try {
-      await api.deleteShift(editingId);
+      await api.restoreShift(editingId);
+      setPendingShiftAction(null);
       setEditing(null);
-      setMessage("실제 기록을 삭제했습니다.");
+      setMessage("기본 근무 상태로 되돌렸습니다.");
+      await onReload();
+    } catch (error) {
+      setMessage(errorText(error));
+    }
+  }
+  async function removeWork() {
+    if (!editing) return;
+    try {
+      if (editingId !== null) {
+        await api.deleteShift(editingId);
+      } else if (editing.templateId !== null) {
+        await api.deleteTemplateShift(editing.templateId, editing.workDate);
+      } else {
+        return;
+      }
+      setPendingShiftAction(null);
+      setEditing(null);
+      setMessage("근무를 삭제했습니다.");
       await onReload();
     } catch (error) {
       setMessage(errorText(error));
@@ -344,7 +360,7 @@ function ScheduleView({
       {editing && (
         <Modal
           title={editing.templateId ? "실제 근무 수정" : "추가 근무 등록"}
-          onClose={() => { setPendingOverlapSave(null); setEditing(null); }}
+          onClose={() => { setPendingOverlapSave(null); setPendingShiftAction(null); setEditing(null); }}
         >
           <form onSubmit={save} className="form-grid">
             {editing.templateId === null && editingId === null && (
@@ -437,23 +453,49 @@ function ScheduleView({
                 }
               />
             </label>
-            <div className="form-actions full">
-              {editingId && (
-                <button
-                  type="button"
-                  className="danger"
-                  onClick={() => void remove()}
-                >
-                  실제 기록 삭제
+            <div className="form-actions schedule-form-actions full">
+              <div className="schedule-form-actions-left">
+                {editingId !== null && editing.templateId !== null && (
+                  <button type="button" onClick={() => setPendingShiftAction("restore")}>
+                    원래대로 되돌리기
+                  </button>
+                )}
+                {(editingId !== null || editing.templateId !== null) && (
+                  <button type="button" className="danger" onClick={() => setPendingShiftAction("delete")}>
+                    삭제
+                  </button>
+                )}
+              </div>
+              <div className="schedule-form-actions-right">
+                <button type="button" onClick={() => setEditing(null)}>취소</button>
+                <button className="primary">
+                  {editingId === null && editing.templateId !== null ? "변경 저장" : "저장"}
                 </button>
-              )}
-              <span />
-              <button type="button" onClick={() => setEditing(null)}>
-                취소
-              </button>
-              <button className="primary">저장</button>
+              </div>
             </div>
           </form>
+        </Modal>
+      )}
+      {pendingShiftAction && (
+        <Modal
+          title={pendingShiftAction === "delete" ? "이 근무를 삭제하시겠습니까?" : "원래대로 되돌리시겠습니까?"}
+          onClose={() => setPendingShiftAction(null)}
+        >
+          <p className="confirm-message">
+            {pendingShiftAction === "delete"
+              ? "삭제한 근무는 복구할 수 없습니다."
+              : "변경된 실제 근무 기록이 제거되고 기본 근무 상태로 복구됩니다."}
+          </p>
+          <div className="confirm-actions">
+            <button type="button" autoFocus onClick={() => setPendingShiftAction(null)}>취소</button>
+            <button
+              type="button"
+              className={pendingShiftAction === "delete" ? "danger" : "primary"}
+              onClick={() => void (pendingShiftAction === "delete" ? removeWork() : restore())}
+            >
+              {pendingShiftAction === "delete" ? "삭제" : "원래대로 되돌리기"}
+            </button>
+          </div>
         </Modal>
       )}
       {pendingOverlapSave && (

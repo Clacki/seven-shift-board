@@ -25,7 +25,10 @@ export const api = {
     invoke<ScheduleItem[]>("get_month_schedule", { month }),
   saveShift: (input: ShiftInput, id: number | null = null) =>
     invoke<number>("save_shift", { input, id }),
+  restoreShift: (id: number) => invoke<void>("restore_shift", { id }),
   deleteShift: (id: number) => invoke<void>("delete_shift", { id }),
+  deleteTemplateShift: (templateId: number, workDate: string) =>
+    invoke<void>("delete_template_shift", { templateId, workDate }),
   resetData: () => invoke<void>("reset_data"),
   getHolidayApiKey: () => invoke<string | null>("get_holiday_api_key"),
   setHolidayApiKey: (key: string) =>
